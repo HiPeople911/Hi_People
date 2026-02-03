@@ -730,6 +730,3 @@ Remove-Item "$env:TEMP\disableReg" -Recurse -Force
 Remove-Item "$env:TEMP\DefeatDefend.ps1" -Force
 
 
-}
-
-
