@@ -1,3 +1,5 @@
+#DISABLE DEFENDER SCRIPT BY ZOIC
+
 
 If (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]'Administrator')) {
   Start-Process PowerShell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $PSCommandPath) -Verb RunAs
@@ -241,10 +243,12 @@ Windows Registry Editor Version 5.00
 "value"=dword:00000001
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\PolicyManager\default\WindowsDefenderSecurityCenter\HideWindowsSecurityNotificationAreaControl]
-"value"=dword:00000000
+"value"=dword:00000001
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Security Center]
 "FirstRunDisabled"=dword:00000001
+"AntiVirusOverride"=dword:00000001
+"FirewallOverride"=dword:00000001
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\Notifications]
 "DisableEnhancedNotifications"=dword:00000001
@@ -332,6 +336,8 @@ Windows Registry Editor Version 5.00
 
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\MsSecCore]
 
+[-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\wscsvc]
+
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WdNisDrv]
 
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WdNisSvc]
@@ -344,9 +350,13 @@ Windows Registry Editor Version 5.00
 
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\webthreatdefsvc]
 
+[-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\SecurityHealthService]
+
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\SgrmAgent]
 
 [-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\SgrmBroker]
+
+[-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WinDefend]
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows Defender Security Center\App and Browser protection]
 "DisallowExploitProtectionOverride"=dword:00000001
@@ -357,6 +367,8 @@ Windows Registry Editor Version 5.00
 '@
 $file8 = @'
 Windows Registry Editor Version 5.00
+
+[-HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WinDefend]
 
 [-HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\windowsdefender]
 
@@ -605,7 +617,9 @@ function RegSetDwords ($hive, $key, [array]$values, [array]$dword, $REG_TYPE = 4
     $disable = 1
     $disable_rev = 0
     $disable_SMARTSCREENFILTER = 1
-    Stop-Process -name 'MpCmdRun' -force -ErrorAction SilentlyContinue
+    #stop security center and defender commandline exe
+    stop-service 'wscsvc' -force -ErrorAction SilentlyContinue *>$null
+    Stop-Process -name 'OFFmeansOFF', 'MpCmdRun' -force -ErrorAction SilentlyContinue
  
     $HKLM = [uintptr][uint32]2147483650 
     $VALUES = 'ServiceKeepAlive', 'PreviousRunningMode', 'IsServiceRunning', 'DisableAntiSpyware', 'DisableAntiVirus', 'PassiveMode'
@@ -615,16 +629,21 @@ function RegSetDwords ($hive, $key, [array]$values, [array]$dword, $REG_TYPE = 4
     RegSetDwords $HKLM 'SOFTWARE\Microsoft\Windows Defender' $VALUES $DWORDS
     [GC]::Collect() 
     Start-Sleep 1
+    #run defender command line to disable msmpeng service
     Push-Location "$env:programfiles\Windows Defender"
-    if (test-path 'MpCmdRun.exe') {
-        Start-Process -wait 'MpCmdRun.exe' -args '-DisableService -HighPriority' -ErrorAction SilentlyContinue
-    }
+    $mpcmdrun = ('OFFmeansOFF.exe', 'MpCmdRun.exe')[(test-path 'MpCmdRun.exe')]
+    Start-Process -wait $mpcmdrun -args '-DisableService -HighPriority'
     #wait for service to close before continuing
     $wait = 14
     while ((get-process -name 'MsMpEng' -ea 0) -and $wait -gt 0) { 
         $wait--
         Start-Sleep 1
     }
+ 
+    #rename defender commandline exe
+    $location = split-path $(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\WinDefend' ImagePath -ErrorAction SilentlyContinue).ImagePath.Trim('"')
+    Push-Location $location
+    Rename-Item MpCmdRun.exe -NewName 'OFFmeansOFF.exe' -force -ErrorAction SilentlyContinue
  
     #cleanup scan history
     Remove-Item "$env:ProgramData\Microsoft\Windows Defender\Scans\mpenginedb.db" -force -ErrorAction SilentlyContinue
@@ -693,15 +712,37 @@ foreach ($file in $files) {
 
 
 #attempt to kill defender processes and silence notifications from sec center
-$command = 'Stop-Process MpDefenderCoreService -Force; Stop-Process smartscreen -Force; Stop-Service -Name Sense -Force'
+$command = 'Stop-Process MpDefenderCoreService -Force; Stop-Process smartscreen -Force; Stop-Process SecurityHealthService -Force; Stop-Process SecurityHealthSystray -Force; Stop-Service -Name wscsvc -Force; Stop-Service -Name Sense -Force'
 Run-Trusted -command $command
 Run-Trusted -command $run
+
+#disable tasks
+$tasks = Get-ScheduledTask
+foreach ($task in $tasks) {
+  if ($task.Taskname -like 'Windows Defender*') {
+    Disable-ScheduledTask -TaskName $task.TaskName -ErrorAction SilentlyContinue
+  }
+}
+
 
 Write-Host 'Cleaning Up...'
 Remove-Item "$env:TEMP\disableReg" -Recurse -Force
 Remove-Item "$env:TEMP\DefeatDefend.ps1" -Force
 
-Run-Trusted -command "reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender' /f"
-Run-Trusted -command "reg.exe delete 'HKLM\SOFTWARE\Microsoft\PolicyManager\default\Defender' /f"
-Run-Trusted -command "reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows Defender Security Center' /f"
-Run-Trusted -command "reg.exe delete 'HKLM\SOFTWARE\Microsoft\PolicyManager\default\WindowsDefenderSecurityCenter' /f"
+
+[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null 
+$msgBoxInput = [System.Windows.Forms.MessageBox]::Show('Restart Computer?', 'zoicware', 'YesNo', 'Question')
+
+switch ($msgBoxInput) {
+
+  'Yes' {
+  
+    Restart-Computer
+  }
+
+  'No' {
+  }
+
+}
+
+
